@@ -1,0 +1,87 @@
+#!/bin/bash
+#SBATCH --job-name=lab3_ev_experiments
+#SBATCH --time=00:15:00
+#SBATCH --mem=16G
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=16
+#SBATCH --partition=defq
+
+# FIT3143 Lab 3 - Muhammad Mubashir Shah & Ayman Zuhair Shashavali
+# Automated test runner for CAAS cluster (runs blocking and non-blocking over 60 topologies)
+
+module load openmpi/4.1.5-gcc-11.2.0-ux65npg
+
+RESULTS_DIR="caas_results"
+mkdir -p "$RESULTS_DIR"
+
+# compile both versions first
+make clean
+make all
+if [ $? -ne 0 ]; then
+    echo "Make failed! Exiting."
+    exit 1
+fi
+
+GRID_CSV="$RESULTS_DIR/results_grid_caas.csv"
+LINE_CSV="$RESULTS_DIR/results_line_caas.csv"
+
+echo "Version,Nrows,Ncols,TotalNodes,Cycles,TotalTime,BaseCommTime,Alerts" > "$GRID_CSV"
+echo "Version,Nrows,Ncols,TotalNodes,Cycles,TotalTime,BaseCommTime,Alerts" > "$LINE_CSV"
+
+echo "=== Running 30 2D Grid Sizes ==="
+
+# 30 different grid shapes that fit within our 32-core allocation
+grid_configs=(
+    "2 2"  "2 3"  "3 2"  "2 4"  "4 2"
+    "3 3"  "2 5"  "5 2"  "3 4"  "4 3"
+    "2 6"  "6 2"  "2 7"  "7 2"  "3 5"
+    "5 3"  "4 4"  "2 8"  "8 2"  "3 6"
+    "6 3"  "4 5"  "5 4"  "3 7"  "7 3"
+    "4 6"  "6 4"  "5 5"  "3 9"  "5 6"
+)
+
+grid_count=1
+for config in "${grid_configs[@]}"; do
+    r=$(echo $config | cut -d' ' -f1)
+    c=$(echo $config | cut -d' ' -f2)
+    nodes=$((r * c))
+    procs=$((nodes + 1))
+
+    echo "[$grid_count/30] Grid ${r}x${c} (${nodes} nodes + 1 base station = ${procs} procs)"
+
+    # run blocking version
+    srun --ntasks=$procs --cpus-per-task=1 --exact ./task_blocking $r $c 6 10 1 | grep "CSV_RESULT" | cut -d',' -f2- >> "$GRID_CSV"
+
+    # run non-blocking version
+    srun --ntasks=$procs --cpus-per-task=1 --exact ./task_nonblocking $r $c 6 10 1 | grep "CSV_RESULT" | cut -d',' -f2- >> "$GRID_CSV"
+
+    grid_count=$((grid_count + 1))
+done
+
+echo ""
+echo "=== Running 30 1D Line Topologies ==="
+
+# 30 line sizes from 2 to 31 nodes
+line_count=1
+for n in $(seq 2 31); do
+    nodes=$n
+    procs=$((nodes + 1))
+
+    echo "[$line_count/30] Line 1x${n} (${nodes} nodes + 1 base station = ${procs} procs)"
+
+    # run blocking version
+    srun --ntasks=$procs --cpus-per-task=1 --exact ./task_blocking 1 $n 6 10 1 | grep "CSV_RESULT" | cut -d',' -f2- >> "$LINE_CSV"
+
+    # run non-blocking version
+    srun --ntasks=$procs --cpus-per-task=1 --exact ./task_nonblocking 1 $n 6 10 1 | grep "CSV_RESULT" | cut -d',' -f2- >> "$LINE_CSV"
+
+    line_count=$((line_count + 1))
+done
+
+echo ""
+echo "All tests finished! Results saved in $RESULTS_DIR"
+
+# generate dashboard if script is here
+[ -f generate_html_graphs.py ] && python3 generate_html_graphs.py || echo "Results saved to CSV. Run generate_html_graphs.py locally."
+
+echo "Done at: $(date)"
